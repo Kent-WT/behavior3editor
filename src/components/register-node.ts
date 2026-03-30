@@ -725,11 +725,21 @@ class TreeNode extends Rect {
     );
     if (btn && !Reflect.has(btn, "__bind__")) {
       Reflect.set(btn, "__bind__", true);
-      btn.addEventListener(CommonEvent.CLICK, () => {
+      btn.addEventListener(CommonEvent.CLICK, (e: MouseEvent) => {
         const { collapsed } = this.attributes;
         const graph = this.context.graph;
         if (collapsed) {
           graph.expandElement(this.id);
+          if (e.ctrlKey) {
+            (async () => {
+              const queue: NodeData[] = this._data.children ? [...this._data.children] : [];
+              while (queue.length > 0) {
+                const node = queue.shift()!;
+                await graph.expandElement(node.id, false);
+                node.children?.forEach((child) => queue.push(child));
+              }
+            })();
+          }
         } else {
           graph.collapseElement(this.id);
         }

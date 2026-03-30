@@ -35,6 +35,7 @@ type IGraph = {
 const workspace = useWorkspace.getState();
 
 const HOVER_EXPAND_DELAY = 200; // Hover-to-expand delay (milliseconds)
+const INITIAL_COLLAPSE_DEPTH = 2; // Collapse nodes at this depth or deeper on initial load
 
 export interface FilterOption {
   results: string[];
@@ -57,6 +58,8 @@ export class Graph {
   private _dropId?: string;
   private _selectedId: string | null = null;
   private _hoverTimer: ReturnType<typeof setTimeout> | null = null;
+  private _ctrlPressed = false;
+  private _onKeyEvent = (e: KeyboardEvent) => { this._ctrlPressed = e.ctrlKey; };
 
   constructor(readonly editor: EditorStore, ref: React.RefObject<HTMLDivElement>) {
     this._graph = new G6Graph({
@@ -110,12 +113,16 @@ export class Graph {
     this._graph.on(G6NodeEvent.DROP, this._onDrop.bind(this));
     this._graph.on(G6NodeEvent.POINTER_ENTER, this._onPointerEnter.bind(this));
     this._graph.on(G6NodeEvent.POINTER_LEAVE, this._onPointerLeave.bind(this));
+    document.addEventListener("keydown", this._onKeyEvent);
+    document.addEventListener("keyup", this._onKeyEvent);
     this._update(editor.data);
     this._historyIndex = -1;
     this._storeHistory(false);
   }
 
   destroy() {
+    document.removeEventListener("keydown", this._onKeyEvent);
+    document.removeEventListener("keyup", this._onKeyEvent);
     this._graph.destroy();
   }
 
@@ -165,34 +172,47 @@ export class Graph {
       graph.context.behavior.currentTarget = null;
     }
 
+    // Preserve collapsed state from current graph, or compute initial collapse
+    const collapsedIds = new Set<string>();
+    const depthMap = new Map<string, number>();
+
+    if (this._graph.rendered) {
+      for (const node of this._graph.getNodeData()) {
+        if ((node as unknown as { style?: { collapsed?: boolean } }).style?.collapsed) {
+          collapsedIds.add(node.id);
+        }
+      }
+    } else {
+      this._buildDepthMap(data.root, 0, depthMap);
+    }
+
     this._graph.clear();
     this._graph.setData(
       treeToGraphData(data.root, {
         getNodeData: (node) => {
+          let collapsed: boolean;
+          if (collapsedIds.size > 0) {
+            collapsed = collapsedIds.has(node.id);
+          } else {
+            const depth = depthMap.get(node.id);
+            collapsed = depth !== undefined && depth >= INITIAL_COLLAPSE_DEPTH;
+          }
           return {
             id: node.id,
             prefix: this.data.prefix,
             data: node as unknown as Record<string, unknown>,
             children: node.children?.map((child) => child.id),
+            ...(collapsed ? { style: { collapsed: true } } : {}),
           };
         },
       })
     );
     await this._render();
-    await this._collapseDeepNodes();
   }
 
-  private async _collapseDeepNodes(maxDepth: number = 2) {
-    const withDepth = this._graph.getNodeData().map((n) => ({
-      id: n.id,
-      depth: this._getAncestors(n.id).length,
-    }));
-    withDepth.sort((a, b) => b.depth - a.depth);
-    for (const { id, depth } of withDepth) {
-      if (depth >= maxDepth) {
-        await this._graph.collapseElement(id, false);
-      }
-    }
+  private _buildDepthMap(node: NodeData, depth: number, map: Map<string, number>) {
+    map.set(node.id, depth);
+    node.children?.forEach((child) => this._buildDepthMap(child, depth + 1, map));
   }
 
   setSize(width: number, height: number) {
@@ -231,6 +251,7 @@ export class Graph {
   private async _render() {
     if (!this._graph.rendered) {
       await this._graph.render();
+      return;
     }
     const zoom = this._graph.getZoom();
     await this._graph.zoomTo(1, false);
@@ -800,6 +821,25 @@ export class Graph {
     this._storeHistory();
   }
 
+  async expandSubtree(rootId: string) {
+    const findNode = (node: NodeData, id: string): NodeData | null => {
+      if (node.id === id) return node;
+      for (const child of node.children ?? []) {
+        const found = findNode(child, id);
+        if (found) return found;
+      }
+      return null;
+    };
+    const target = findNode(this.data.root, rootId);
+    if (!target) return;
+    const queue: NodeData[] = [target];
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      await this._graph.expandElement(node.id, false);
+      node.children?.forEach((child) => queue.push(child));
+    }
+  }
+
   private _onPointerEnter(e: IG6PointerEvent<G6Rect>) {
     const id = e.target.id;
     const nodeData = this._graph.getNodeData(id);
@@ -810,8 +850,12 @@ export class Graph {
       return;
     }
     if (isCollapsed) {
+      clearTimeout(this._hoverTimer ?? undefined);
       this._hoverTimer = setTimeout(async () => {
         await this._graph.expandElement(id, false);
+        if (this._ctrlPressed) {
+          await this.expandSubtree(id);
+        }
       }, HOVER_EXPAND_DELAY);
     }
   }
