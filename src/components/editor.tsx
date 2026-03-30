@@ -142,7 +142,7 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
     });
     if (option.results.length > 0) {
       const idx = option.index < option.results.length ? option.index : 0;
-      graph.expandElement();
+      await graph.expandToNode(option.results[idx]);
       graph.focusNode(option.results[idx]);
     } else {
       graph.selectNode(null);
@@ -160,22 +160,22 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
 
   const onDebounceSearchChange = useDebounceCallback(onSearchChange, 100);
 
-  const nextResult = () => {
+  const nextResult = async () => {
     const { results, index } = filterOption;
     if (results.length > 0) {
       const idx = (index + 1) % results.length;
       setFilterOption({ ...filterOption, index: idx });
-      graph.expandElement();
+      await graph.expandToNode(results[idx]);
       graph.focusNode(results[idx]);
     }
   };
 
-  const prevResult = () => {
+  const prevResult = async () => {
     const { results, index } = filterOption;
     if (results.length > 0) {
       const idx = (index + results.length - 1) % results.length;
       setFilterOption({ ...filterOption, index: idx });
-      graph.expandElement();
+      await graph.expandToNode(results[idx]);
       graph.focusNode(results[idx]);
     }
   };

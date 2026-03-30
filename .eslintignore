@@ -5,3 +5,4 @@ common/
 .eslintrc.cjs
 playwright.config.ts
 vite.config.ts
+pre-commit.ts

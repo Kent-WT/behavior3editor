@@ -34,6 +34,8 @@ type IGraph = {
 
 const workspace = useWorkspace.getState();
 
+const HOVER_EXPAND_DELAY = 200; // Hover-to-expand delay (milliseconds)
+
 export interface FilterOption {
   results: string[];
   index: number;
@@ -54,6 +56,7 @@ export class Graph {
   private _dragId?: string;
   private _dropId?: string;
   private _selectedId: string | null = null;
+  private _hoverTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(readonly editor: EditorStore, ref: React.RefObject<HTMLDivElement>) {
     this._graph = new G6Graph({
@@ -105,6 +108,8 @@ export class Graph {
     this._graph.on(G6NodeEvent.DRAG_LEAVE, this._onDragLeave.bind(this));
     this._graph.on(G6NodeEvent.DRAG, this._onDrag.bind(this));
     this._graph.on(G6NodeEvent.DROP, this._onDrop.bind(this));
+    this._graph.on(G6NodeEvent.POINTER_ENTER, this._onPointerEnter.bind(this));
+    this._graph.on(G6NodeEvent.POINTER_LEAVE, this._onPointerLeave.bind(this));
     this._update(editor.data);
     this._historyIndex = -1;
     this._storeHistory(false);
@@ -174,6 +179,20 @@ export class Graph {
       })
     );
     await this._render();
+    await this._collapseDeepNodes();
+  }
+
+  private async _collapseDeepNodes(maxDepth: number = 2) {
+    const withDepth = this._graph.getNodeData().map((n) => ({
+      id: n.id,
+      depth: this._getAncestors(n.id).length,
+    }));
+    withDepth.sort((a, b) => b.depth - a.depth);
+    for (const { id, depth } of withDepth) {
+      if (depth >= maxDepth) {
+        await this._graph.collapseElement(id, false);
+      }
+    }
   }
 
   setSize(width: number, height: number) {
@@ -306,9 +325,10 @@ export class Graph {
     return changed;
   }
 
-  async expandElement() {
-    for (const node of this._graph.getNodeData()) {
-      await this._graph.expandElement(node.id, false);
+  async expandToNode(targetId: string) {
+    const ancestors = this._getAncestors(targetId);
+    for (const ancestor of ancestors) {
+      await this._graph.expandElement(ancestor.id, false);
     }
   }
 
@@ -778,6 +798,29 @@ export class Graph {
     }
     await this._update({ ...this.data, root }, false);
     this._storeHistory();
+  }
+
+  private _onPointerEnter(e: IG6PointerEvent<G6Rect>) {
+    const id = e.target.id;
+    const nodeData = this._graph.getNodeData(id);
+    const isCollapsed = !!(nodeData as unknown as { style?: { collapsed?: boolean } }).style
+      ?.collapsed;
+    const hasChildren = !!nodeData.children?.length;
+    if (!hasChildren) {
+      return;
+    }
+    if (isCollapsed) {
+      this._hoverTimer = setTimeout(async () => {
+        await this._graph.expandElement(id, false);
+      }, HOVER_EXPAND_DELAY);
+    }
+  }
+
+  private _onPointerLeave(_e: IG6PointerEvent<G6Rect>) {
+    if (this._hoverTimer !== null) {
+      clearTimeout(this._hoverTimer);
+      this._hoverTimer = null;
+    }
   }
 
   copyNode() {
