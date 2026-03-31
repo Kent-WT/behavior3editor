@@ -24,6 +24,13 @@ import { TreeNodeState, TreeNodeStyle } from "./register-node";
 
 type G6NodeState = Exclude<G6GraphOptions["node"], undefined>["state"];
 
+/**
+ * G6 Graph 內部結構的部分型別描述。
+ * G6 並未在公開 API 中暴露 `context.behavior` 及 `context.canvas`，
+ * 但我們需要：
+ * - `behavior.currentTarget`：在 clear() 後重置以避免 hover 事件錯誤
+ * - `canvas.getContainer()`：取得 canvas 容器 DOM 以派發 keyup 事件清除卡鍵
+ */
 type IGraph = {
   context: {
     behavior?: {
@@ -37,8 +44,8 @@ type IGraph = {
 
 const workspace = useWorkspace.getState();
 
-const HOVER_EXPAND_DELAY = 200; // Hover-to-expand delay (milliseconds)
-const INITIAL_COLLAPSE_DEPTH = 2; // Collapse nodes at this depth or deeper on initial load
+const HOVER_EXPAND_DELAY = 200; // 滑鼠懸停自動展開延遲（毫秒）
+const INITIAL_COLLAPSE_DEPTH = 2; // 初始載入時，深度 ≥ 此值的節點會自動摺疊
 
 export interface FilterOption {
   results: string[];
@@ -126,6 +133,8 @@ export class Graph {
     this._graph.on(G6CanvasEvent.WHEEL, () => {
       // zoom-canvas 行為是非同步處理 wheel 事件的，延遲一幀確保 zoom 已更新
       requestAnimationFrame(() => {
+        // graph 可能在下一幀前已被銷毀
+        if (!this._graph.rendered) return;
         this._saveViewport();
       });
     });
@@ -204,21 +213,7 @@ export class Graph {
       graph.context.behavior.currentTarget = null;
     }
 
-    // Preserve collapsed state from current graph, or compute initial collapse
-    const collapsedIds = new Set<string>();
-    const depthMap = new Map<string, number>();
-
-    const wasRendered = this._graph.rendered;
-
-    if (this._graph.rendered) {
-      for (const node of this._graph.getNodeData()) {
-        if ((node as unknown as { style?: { collapsed?: boolean } }).style?.collapsed) {
-          collapsedIds.add(node.id);
-        }
-      }
-    } else {
-      this._buildDepthMap(data.root, 0, depthMap);
-    }
+    const { collapsedIds, depthMap, wasRendered } = this._collectCollapseState(data);
 
     // 從追蹤的使用者手動操作狀態儲存 viewport
     const savedPosition = this._viewportPosition;
@@ -247,12 +242,39 @@ export class Graph {
     );
     await this._graph.render();
 
-    // Restore viewport from tracked state
-    // 必須先設 zoom 再設 position，因為 translateTo 內部用 currentZoom 計算
+    await this._restoreViewport(wasRendered, savedZoom, savedPosition);
+  }
+
+  /** 收集目前圖上的摺疊狀態；若尚未渲染則計算初始深度表 */
+  private _collectCollapseState(data: TreeData) {
+    const collapsedIds = new Set<string>();
+    const depthMap = new Map<string, number>();
+    const wasRendered = this._graph.rendered;
+
     if (wasRendered) {
-      await this._graph.zoomTo(savedZoom, false);
-      await this._graph.translateTo(savedPosition, false);
+      for (const node of this._graph.getNodeData()) {
+        if (this._isNodeCollapsed(node)) {
+          collapsedIds.add(node.id);
+        }
+      }
+    } else {
+      this._buildDepthMap(data.root, 0, depthMap);
     }
+
+    return { collapsedIds, depthMap, wasRendered };
+  }
+
+  /** 還原使用者的 viewport 位置（必須先設 zoom 再設 position） */
+  private async _restoreViewport(wasRendered: boolean, zoom: number, position: [number, number]) {
+    if (wasRendered) {
+      await this._graph.zoomTo(zoom, false);
+      await this._graph.translateTo(position, false);
+    }
+  }
+
+  /** 判斷 G6 節點是否處於摺疊狀態（封裝 G6 內部型別斷言） */
+  private _isNodeCollapsed(node: G6NodeData): boolean {
+    return !!(node as unknown as { style?: { collapsed?: boolean } }).style?.collapsed;
   }
 
   private _buildDepthMap(node: NodeData, depth: number, map: Map<string, number>) {
@@ -852,16 +874,14 @@ export class Graph {
     this._storeHistory();
   }
 
-  async expandSubtree(rootId: string) {
-    const findNode = (node: NodeData, id: string): NodeData | null => {
-      if (node.id === id) return node;
-      for (const child of node.children ?? []) {
-        const found = findNode(child, id);
-        if (found) return found;
+  private async _expandSubtree(rootId: string) {
+    let target: NodeData | undefined;
+    b3util.dfs(this.data.root, (node) => {
+      if (node.id === rootId) {
+        target = node;
+        return false; // 提早終止搜尋
       }
-      return null;
-    };
-    const target = findNode(this.data.root, rootId);
+    });
     if (!target) return;
     const queue: NodeData[] = [target];
     while (queue.length > 0) {
@@ -874,8 +894,7 @@ export class Graph {
   private _onPointerEnter(e: IG6PointerEvent<G6Rect>) {
     const id = e.target.id;
     const nodeData = this._graph.getNodeData(id);
-    const isCollapsed = !!(nodeData as unknown as { style?: { collapsed?: boolean } }).style
-      ?.collapsed;
+    const isCollapsed = this._isNodeCollapsed(nodeData);
     const hasChildren = !!nodeData.children?.length;
     if (!hasChildren) {
       return;
@@ -885,7 +904,7 @@ export class Graph {
       this._hoverTimer = setTimeout(async () => {
         await this._graph.expandElement(id, false);
         if (this._ctrlPressed) {
-          await this.expandSubtree(id);
+          await this._expandSubtree(id);
         }
       }, HOVER_EXPAND_DELAY);
     }
@@ -1049,6 +1068,7 @@ export class Graph {
     b3util.dfs(this.data.root, (node) => {
       if (node.path && b3util.files[node.path] !== node.$mtime) {
         updated = true;
+        return false; // 已找到過期的 subtree，提早終止遍歷
       }
     });
     return updated;

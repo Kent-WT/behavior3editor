@@ -24,13 +24,24 @@
 ## 優化
 
 ### Viewport 追蹤機制重構
-- 移除 `AFTER_TRANSFORM` 事件監聽與 `_isRendering` flag
+- 移除 `AFTER_TRANSFORM` 事件監聯與 `_isRendering` flag
 - 改為只監聽 `canvas:dragend`（使用者手動拖拉）和 `canvas:wheel`（使用者滾輪縮放）來記錄 viewport 狀態
 - 程式化操作（`focusNode`、`expandElement`、`render` 等）不再汙染已保存的 viewport 值
 
 ### 搜尋流程優化
 - 新增 `closeSearch()` 統一關閉搜尋流程，關閉後將 focus 還給 canvas
 - 搜尋列支援 Escape 鍵關閉
+
+### Code Review 重構（graph.ts / editor.tsx）
+- `expandSubtree` 內的 local `findNode` 改用 `b3util.dfs` + `return false` 提早終止
+- 常數 `HOVER_EXPAND_DELAY`、`INITIAL_COLLAPSE_DEPTH` 的英文註解改為繁體中文
+- 拆分 `_update()`：提取 `_collectCollapseState()` 和 `_restoreViewport()` 兩個 helper
+- `expandSubtree` 改為 `private _expandSubtree()`（僅類別內部使用）
+- editor.tsx 提取 `EMPTY_FILTER_OPTION` 常數，消除 `closeSearch` 和 `useState` 初始值的重複
+- 提取 `_isNodeCollapsed(node)` 方法封裝 G6 內部型別斷言，消除兩處重複程式碼
+- WHEEL `requestAnimationFrame` 回調加入 `rendered` 防護，避免 graph 銷毀後存取
+- `hasSubtreeUpdated()` 中 `b3util.dfs` 加入 `return false` 提早終止遍歷
+- 為 `IGraph` type 加上 JSDoc 說明為何需要存取 G6 內部 API
 
 ---
 

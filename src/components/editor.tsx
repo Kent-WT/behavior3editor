@@ -23,6 +23,17 @@ import { mergeClassNames } from "../misc/util";
 import { FilterOption, Graph } from "./graph";
 import "./register-node";
 
+/** 空的搜尋選項，用於初始化和關閉搜尋時重置 */
+const EMPTY_FILTER_OPTION: FilterOption = {
+  results: [],
+  index: 0,
+  filterStr: "",
+  filterCase: false,
+  filterFocus: true,
+  filterType: "content",
+  placeholder: "",
+} as const;
+
 export interface EditorProps extends React.HTMLAttributes<HTMLElement> {
   data: EditorStore;
   onChange: () => void;
@@ -125,13 +136,8 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
 
   const [showingSearch, setShowingSearch] = useState(false);
   const [filterOption, setFilterOption] = useState<FilterOption>({
+    ...EMPTY_FILTER_OPTION,
     results: [],
-    index: 0,
-    filterStr: "",
-    filterCase: false,
-    filterFocus: true,
-    filterType: "content",
-    placeholder: "",
   });
 
   const onSearchChange = async (option: FilterOption) => {
@@ -182,15 +188,7 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
 
   const closeSearch = () => {
     setShowingSearch(false);
-    onSearchChange({
-      results: [],
-      index: 0,
-      filterCase: false,
-      filterFocus: true,
-      filterStr: "",
-      filterType: "content",
-      placeholder: "",
-    });
+    onSearchChange({ ...EMPTY_FILTER_OPTION, results: [] });
     graph?.clearKeyState();
     graphRef.current?.focus();
   };
