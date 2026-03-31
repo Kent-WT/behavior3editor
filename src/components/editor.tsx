@@ -116,7 +116,7 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
   );
 
   const searchInputRef = useRef<InputRef>(null);
-  const graphRef = useRef(null);
+  const graphRef = useRef<HTMLDivElement>(null);
   const sizeRef = useRef(null);
   const editorSize = useSize(sizeRef);
   const { t } = useTranslation();
@@ -180,6 +180,21 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
     }
   };
 
+  const closeSearch = () => {
+    setShowingSearch(false);
+    onSearchChange({
+      results: [],
+      index: 0,
+      filterCase: false,
+      filterFocus: true,
+      filterStr: "",
+      filterType: "content",
+      placeholder: "",
+    });
+    graph?.clearKeyState();
+    graphRef.current?.focus();
+  };
+
   const searchByType = (type: FilterOption["filterType"]) => {
     let placeholder = "";
     const filterType = type;
@@ -195,6 +210,7 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
     if (!showingSearch) {
       setFilterOption({ ...filterOption, placeholder, filterType });
       setShowingSearch(true);
+      graph?.clearKeyState();
       return;
     }
     if (filterOption.filterType === type) {
@@ -209,7 +225,9 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.code === Hotkey.Enter) {
+    if (e.code === Hotkey.Escape) {
+      closeSearch();
+    } else if (e.code === Hotkey.Enter) {
       nextResult();
     } else if ((e.ctrlKey || e.metaKey) && e.code === "KeyF") {
       searchByType("content");
@@ -438,18 +456,7 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
               type="text"
               size="small"
               style={{ width: "30px" }}
-              onClick={() => {
-                setShowingSearch(false);
-                onSearchChange({
-                  results: [],
-                  index: 0,
-                  filterCase: false,
-                  filterFocus: true,
-                  filterStr: "",
-                  filterType: "content",
-                  placeholder: "",
-                });
-              }}
+              onClick={closeSearch}
             />
           </Flex>
         </Flex>

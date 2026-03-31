@@ -1,6 +1,7 @@
 import {
   CanvasEvent as G6CanvasEvent,
   Graph as G6Graph,
+  GraphEvent as G6GraphEvent,
   GraphOptions as G6GraphOptions,
   NodeData as G6NodeData,
   NodeEvent as G6NodeEvent,
@@ -28,6 +29,9 @@ type IGraph = {
   context: {
     behavior?: {
       currentTarget: unknown;
+    };
+    canvas?: {
+      getContainer(): HTMLElement | null;
     };
   };
 };
@@ -60,6 +64,9 @@ export class Graph {
   private _hoverTimer: ReturnType<typeof setTimeout> | null = null;
   private _ctrlPressed = false;
   private _onKeyEvent = (e: KeyboardEvent) => { this._ctrlPressed = e.ctrlKey; };
+  private _viewportPosition: [number, number] = [0, 0];
+  private _viewportZoom: number = 1;
+  private _isRendering = false;
 
   constructor(readonly editor: EditorStore, ref: React.RefObject<HTMLDivElement>) {
     this._graph = new G6Graph({
@@ -113,6 +120,12 @@ export class Graph {
     this._graph.on(G6NodeEvent.DROP, this._onDrop.bind(this));
     this._graph.on(G6NodeEvent.POINTER_ENTER, this._onPointerEnter.bind(this));
     this._graph.on(G6NodeEvent.POINTER_LEAVE, this._onPointerLeave.bind(this));
+    this._graph.on(G6GraphEvent.AFTER_TRANSFORM, () => {
+      if (!this._isRendering) {
+        this._viewportPosition = this._graph.getPosition() as [number, number];
+        this._viewportZoom = this._graph.getZoom();
+      }
+    });
     document.addEventListener("keydown", this._onKeyEvent);
     document.addEventListener("keyup", this._onKeyEvent);
     this._update(editor.data);
@@ -124,6 +137,15 @@ export class Graph {
     document.removeEventListener("keydown", this._onKeyEvent);
     document.removeEventListener("keyup", this._onKeyEvent);
     this._graph.destroy();
+  }
+
+  clearKeyState() {
+    const container = (this._graph as unknown as IGraph).context.canvas?.getContainer();
+    if (container) {
+      for (const key of ["Control", "Shift", "Alt", "Meta", "f", "g"]) {
+        container.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+      }
+    }
   }
 
   get data() {
@@ -176,6 +198,8 @@ export class Graph {
     const collapsedIds = new Set<string>();
     const depthMap = new Map<string, number>();
 
+    const wasRendered = this._graph.rendered;
+
     if (this._graph.rendered) {
       for (const node of this._graph.getNodeData()) {
         if ((node as unknown as { style?: { collapsed?: boolean } }).style?.collapsed) {
@@ -186,28 +210,43 @@ export class Graph {
       this._buildDepthMap(data.root, 0, depthMap);
     }
 
-    this._graph.clear();
-    this._graph.setData(
-      treeToGraphData(data.root, {
-        getNodeData: (node) => {
-          let collapsed: boolean;
-          if (collapsedIds.size > 0) {
-            collapsed = collapsedIds.has(node.id);
-          } else {
-            const depth = depthMap.get(node.id);
-            collapsed = depth !== undefined && depth >= INITIAL_COLLAPSE_DEPTH;
-          }
-          return {
-            id: node.id,
-            prefix: this.data.prefix,
-            data: node as unknown as Record<string, unknown>,
-            children: node.children?.map((child) => child.id),
-            ...(collapsed ? { style: { collapsed: true } } : {}),
-          };
-        },
-      })
-    );
-    await this._render();
+    // Save viewport from tracked state (always up-to-date via AFTER_TRANSFORM event)
+    const savedPosition = this._viewportPosition;
+    const savedZoom = this._viewportZoom;
+
+    this._isRendering = true;
+    try {
+      this._graph.clear();
+      this._graph.setData(
+        treeToGraphData(data.root, {
+          getNodeData: (node) => {
+            let collapsed: boolean;
+            if (collapsedIds.size > 0) {
+              collapsed = collapsedIds.has(node.id);
+            } else {
+              const depth = depthMap.get(node.id);
+              collapsed = depth !== undefined && depth >= INITIAL_COLLAPSE_DEPTH;
+            }
+            return {
+              id: node.id,
+              prefix: this.data.prefix,
+              data: node as unknown as Record<string, unknown>,
+              children: node.children?.map((child) => child.id),
+              ...(collapsed ? { style: { collapsed: true } } : {}),
+            };
+          },
+        })
+      );
+      await this._graph.render();
+    } finally {
+      this._isRendering = false;
+    }
+
+    // Restore viewport from tracked state
+    if (wasRendered) {
+      await this._graph.translateTo(savedPosition, false);
+      await this._graph.zoomTo(savedZoom, false);
+    }
   }
 
   private _buildDepthMap(node: NodeData, depth: number, map: Map<string, number>) {
@@ -246,20 +285,6 @@ export class Graph {
       data.children = undefined;
     }
     return data;
-  }
-
-  private async _render() {
-    if (!this._graph.rendered) {
-      await this._graph.render();
-      return;
-    }
-    const zoom = this._graph.getZoom();
-    await this._graph.zoomTo(1, false);
-    const [x, y] = this._graph.getPosition();
-    await this._graph.translateTo([0, 0], false);
-    await this._graph.render();
-    await this._graph.translateTo([x, y], false);
-    await this._graph.zoomTo(zoom, false);
   }
 
   private _getAncestors(id: string): G6NodeData[] {
