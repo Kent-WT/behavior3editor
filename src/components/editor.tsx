@@ -331,7 +331,19 @@ export const Editor: FC<EditorProps> = ({ onChange, data: editor, ...props }) =>
 
     if (graph && workspace.editing === editor) {
       graph.setSize(editorSize.width, editorSize.height);
-      refreshGraph();
+
+      // tab 切換回來時只處理必要操作：
+      // 1. 若 subtree 有外部更新，才需要 refresh 重建圖
+      // 2. 若有 focusId（從其他地方跳轉過來），先確保圖是最新的再聚焦
+      // 3. 否則不做 refresh，保持 viewport 原位
+      if (graph.hasSubtreeUpdated()) {
+        refreshGraph();
+      } else if (editor.focusId) {
+        refreshGraph();
+      } else {
+        // 僅重新選取當前節點以更新 inspector 面板
+        graph.selectNode(graph.selectedId);
+      }
     }
   }, [editorSize, workspace.editing, graph]);
 

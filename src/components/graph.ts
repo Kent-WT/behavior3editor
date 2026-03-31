@@ -1,7 +1,6 @@
 import {
   CanvasEvent as G6CanvasEvent,
   Graph as G6Graph,
-  GraphEvent as G6GraphEvent,
   GraphOptions as G6GraphOptions,
   NodeData as G6NodeData,
   NodeEvent as G6NodeEvent,
@@ -66,7 +65,6 @@ export class Graph {
   private _onKeyEvent = (e: KeyboardEvent) => { this._ctrlPressed = e.ctrlKey; };
   private _viewportPosition: [number, number] = [0, 0];
   private _viewportZoom: number = 1;
-  private _isRendering = false;
 
   constructor(readonly editor: EditorStore, ref: React.RefObject<HTMLDivElement>) {
     this._graph = new G6Graph({
@@ -120,11 +118,16 @@ export class Graph {
     this._graph.on(G6NodeEvent.DROP, this._onDrop.bind(this));
     this._graph.on(G6NodeEvent.POINTER_ENTER, this._onPointerEnter.bind(this));
     this._graph.on(G6NodeEvent.POINTER_LEAVE, this._onPointerLeave.bind(this));
-    this._graph.on(G6GraphEvent.AFTER_TRANSFORM, () => {
-      if (!this._isRendering) {
-        this._viewportPosition = this._graph.getPosition() as [number, number];
-        this._viewportZoom = this._graph.getZoom();
-      }
+    // 只在使用者手動拖拉/縮放時記錄 viewport 狀態，
+    // 避免程式化操作（focusNode、expandElement、render 等）汙染已保存的值
+    this._graph.on(G6CanvasEvent.DRAG_END, () => {
+      this._saveViewport();
+    });
+    this._graph.on(G6CanvasEvent.WHEEL, () => {
+      // zoom-canvas 行為是非同步處理 wheel 事件的，延遲一幀確保 zoom 已更新
+      requestAnimationFrame(() => {
+        this._saveViewport();
+      });
     });
     document.addEventListener("keydown", this._onKeyEvent);
     document.addEventListener("keyup", this._onKeyEvent);
@@ -145,6 +148,13 @@ export class Graph {
       for (const key of ["Control", "Shift", "Alt", "Meta", "f", "g"]) {
         container.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
       }
+    }
+  }
+
+  private _saveViewport() {
+    if (this._graph.rendered) {
+      this._viewportPosition = this._graph.getPosition() as [number, number];
+      this._viewportZoom = this._graph.getZoom();
     }
   }
 
@@ -210,42 +220,38 @@ export class Graph {
       this._buildDepthMap(data.root, 0, depthMap);
     }
 
-    // Save viewport from tracked state (always up-to-date via AFTER_TRANSFORM event)
+    // 從追蹤的使用者手動操作狀態儲存 viewport
     const savedPosition = this._viewportPosition;
     const savedZoom = this._viewportZoom;
 
-    this._isRendering = true;
-    try {
-      this._graph.clear();
-      this._graph.setData(
-        treeToGraphData(data.root, {
-          getNodeData: (node) => {
-            let collapsed: boolean;
-            if (collapsedIds.size > 0) {
-              collapsed = collapsedIds.has(node.id);
-            } else {
-              const depth = depthMap.get(node.id);
-              collapsed = depth !== undefined && depth >= INITIAL_COLLAPSE_DEPTH;
-            }
-            return {
-              id: node.id,
-              prefix: this.data.prefix,
-              data: node as unknown as Record<string, unknown>,
-              children: node.children?.map((child) => child.id),
-              ...(collapsed ? { style: { collapsed: true } } : {}),
-            };
-          },
-        })
-      );
-      await this._graph.render();
-    } finally {
-      this._isRendering = false;
-    }
+    this._graph.clear();
+    this._graph.setData(
+      treeToGraphData(data.root, {
+        getNodeData: (node) => {
+          let collapsed: boolean;
+          if (collapsedIds.size > 0) {
+            collapsed = collapsedIds.has(node.id);
+          } else {
+            const depth = depthMap.get(node.id);
+            collapsed = depth !== undefined && depth >= INITIAL_COLLAPSE_DEPTH;
+          }
+          return {
+            id: node.id,
+            prefix: this.data.prefix,
+            data: node as unknown as Record<string, unknown>,
+            children: node.children?.map((child) => child.id),
+            ...(collapsed ? { style: { collapsed: true } } : {}),
+          };
+        },
+      })
+    );
+    await this._graph.render();
 
     // Restore viewport from tracked state
+    // 必須先設 zoom 再設 position，因為 translateTo 內部用 currentZoom 計算
     if (wasRendered) {
-      await this._graph.translateTo(savedPosition, false);
       await this._graph.zoomTo(savedZoom, false);
+      await this._graph.translateTo(savedPosition, false);
     }
   }
 
