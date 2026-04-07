@@ -1,3 +1,4 @@
+import { arrayMove } from "@dnd-kit/sortable";
 import { BrowserWindow, dialog } from "@electron/remote";
 import { ipcRenderer } from "electron";
 import * as fs from "fs";
@@ -144,6 +145,7 @@ export type WorkspaceStore = {
   open: (path: string, focusId?: string) => void;
   edit: (path: string, focusId?: string) => void;
   close: (path: string) => void;
+  reorderEditors: (fromIndex: number, toIndex: number) => void;
   find: (path: string) => EditorStore | undefined;
   relative: (path: string) => string;
   refresh: (path: string) => void;
@@ -549,6 +551,11 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     }
     set({ editing: editting, editors: editors });
     setting.closeEditor(workspace.path, path);
+  },
+
+  reorderEditors: (fromIndex, toIndex) => {
+    const workspace = get();
+    set({ editors: arrayMove(workspace.editors, fromIndex, toIndex) });
   },
 
   find: (path) => {

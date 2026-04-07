@@ -1,6 +1,9 @@
+import { DndContext, type Modifier, PointerSensor, closestCenter, useSensor } from "@dnd-kit/core";
+import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { app } from "@electron/remote";
 import { Button, Flex, Layout, Space, Tabs, Tag, Tooltip } from "antd";
-import { FC, useEffect, useRef, useState } from "react";
+import React, { FC, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FaExclamationTriangle } from "react-icons/fa";
 import { PiTreeStructureFill } from "react-icons/pi";
@@ -17,6 +20,57 @@ import { Editor } from "./editor";
 import { Explorer } from "./explorer";
 import { Inspector } from "./inspector";
 import { TitleBar } from "./titlebar";
+
+const DraggableTabNode: FC<{ id: string; children: React.ReactElement }> = ({ id, children }) => {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({
+    id,
+    animateLayoutChanges: () => false,
+  });
+  const style: React.CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition: "none",
+    cursor: isDragging ? "grabbing" : "grab",
+    zIndex: isDragging ? 1 : undefined,
+  };
+  return React.cloneElement(children, {
+    ref: setNodeRef,
+    style: { ...children.props.style, ...style },
+    ...attributes,
+    ...listeners,
+  });
+};
+
+const EDGE_SCROLL_ZONE = 50;
+const EDGE_SCROLL_SPEED = 8;
+
+function getTabNavWrap(tabsRef: React.RefObject<HTMLDivElement | null>): HTMLElement | null {
+  return tabsRef.current?.querySelector(".ant-tabs-nav-wrap") ?? null;
+}
+
+const restrictToTabBar: Modifier = ({ transform, containerNodeRect, draggingNodeRect }) => {
+  if (!containerNodeRect || !draggingNodeRect) return transform;
+  const minX = containerNodeRect.left - draggingNodeRect.left;
+  const maxX = containerNodeRect.left + containerNodeRect.width - draggingNodeRect.left - draggingNodeRect.width;
+  return {
+    ...transform,
+    x: Math.min(Math.max(transform.x, minX), maxX),
+    y: 0,
+  };
+};
+
+function useTabWheelScroll(tabsRef: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const navWrap = getTabNavWrap(tabsRef);
+    if (!navWrap) return;
+    const onWheel = (e: WheelEvent) => {
+      if (navWrap.scrollWidth <= navWrap.clientWidth) return;
+      e.preventDefault();
+      navWrap.scrollLeft += e.deltaY;
+    };
+    navWrap.addEventListener("wheel", onWheel, { passive: false });
+    return () => navWrap.removeEventListener("wheel", onWheel);
+  });
+}
 
 const { Header, Content, Sider } = Layout;
 
@@ -48,6 +102,7 @@ export const Workspace: FC = () => {
       editing: state.editing,
       fileTree: state.fileTree,
       find: state.find,
+      reorderEditors: state.reorderEditors,
     }))
   );
   const { settings } = useSetting(useShallow((state) => ({ settings: state.data })));
@@ -57,6 +112,49 @@ export const Workspace: FC = () => {
   const { width = 0, height = 0 } = useWindowSize();
 
   const keysRef = useRef<HTMLDivElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const scrollIntervalRef = useRef<number | null>(null);
+  const tabDndSensor = useSensor(PointerSensor, { activationConstraint: { distance: 5 } });
+
+  useTabWheelScroll(tabsRef);
+
+  const edgeScrollDirRef = useRef(0);
+
+  const stopEdgeScroll = () => {
+    if (scrollIntervalRef.current !== null) {
+      clearInterval(scrollIntervalRef.current);
+      scrollIntervalRef.current = null;
+    }
+    edgeScrollDirRef.current = 0;
+  };
+
+  const handleDragMove = (event: { activatorEvent: Event; delta: { x: number } }) => {
+    const navWrap = getTabNavWrap(tabsRef);
+    if (!navWrap) return;
+    const rect = navWrap.getBoundingClientRect();
+    const pointerX = (event.activatorEvent as PointerEvent).clientX + event.delta.x;
+    let direction = 0;
+    if (pointerX < rect.left + EDGE_SCROLL_ZONE) direction = -1;
+    else if (pointerX > rect.right - EDGE_SCROLL_ZONE) direction = 1;
+
+    if (direction !== edgeScrollDirRef.current) {
+      stopEdgeScroll();
+      edgeScrollDirRef.current = direction;
+      if (direction !== 0) {
+        scrollIntervalRef.current = window.setInterval(() => {
+          const maxScroll = navWrap.scrollWidth - navWrap.clientWidth;
+          if (
+            (direction === -1 && navWrap.scrollLeft <= 0) ||
+            (direction === 1 && navWrap.scrollLeft >= maxScroll)
+          ) {
+            stopEdgeScroll();
+            return;
+          }
+          navWrap.scrollLeft += direction * EDGE_SCROLL_SPEED;
+        }, 16);
+      }
+    }
+  };
 
   useKeyPress(Hotkey.Build, keysRef, (event) => {
     event.preventDefault();
@@ -489,51 +587,83 @@ export const Workspace: FC = () => {
             </Flex>
           )}
           {workspace.editors.length > 0 && (
-            <Tabs
-              hideAdd
-              type="editable-card"
-              activeKey={workspace.editing?.path}
-              onEdit={(activeKey, action) => {
-                if (action === "remove") {
-                  const path = activeKey as string;
-                  const editor = workspace.find(path);
-                  if (editor && editor.changed) {
-                    showSaveDialog(editor);
-                  } else {
-                    workspace.close(path);
-                    keysRef.current?.focus();
+            <DndContext
+              sensors={[tabDndSensor]}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToTabBar]}
+              onDragMove={handleDragMove}
+              onDragEnd={({ active, over }) => {
+                stopEdgeScroll();
+                if (active.id !== over?.id) {
+                  const from = workspace.editors.findIndex((v) => v.path === active.id);
+                  const to = workspace.editors.findIndex((v) => v.path === over?.id);
+                  if (from >= 0 && to >= 0) {
+                    workspace.reorderEditors(from, to);
                   }
                 }
               }}
-              onChange={(activeKey) => {
-                workspace.edit(activeKey);
-              }}
-              items={workspace.editors.map((v) => {
-                return {
-                  label: (
-                    <Tooltip
-                      arrow={false}
-                      placement="bottom"
-                      mouseEnterDelay={1}
-                      // mouseLeaveDelay={100}
-                      color="#010409"
-                      overlayStyle={{ userSelect: "none", WebkitUserSelect: "none" }}
-                      autoAdjustOverflow={true}
-                      overlayInnerStyle={{
-                        width: "fit-content",
-                        border: "1px solid var(--b3-color-border)",
-                        borderRadius: "4px",
-                      }}
-                      title={<div style={{ width: "max-content" }}>{v.path}</div>}
-                    >
-                      {`${Path.basename(v.path)}${v.changed ? "*" : ""}`}
-                    </Tooltip>
-                  ),
-                  key: v.path,
-                  children: <Editor data={v} onChange={forceUpdate} />,
-                };
-              })}
-            />
+              onDragCancel={stopEdgeScroll}
+            >
+              <SortableContext
+                items={workspace.editors.map((v) => v.path)}
+                strategy={horizontalListSortingStrategy}
+              >
+                <Tabs
+                  hideAdd
+                  type="editable-card"
+                  activeKey={workspace.editing?.path}
+                  onEdit={(activeKey, action) => {
+                    if (action === "remove") {
+                      const path = activeKey as string;
+                      const editor = workspace.find(path);
+                      if (editor && editor.changed) {
+                        showSaveDialog(editor);
+                      } else {
+                        workspace.close(path);
+                        keysRef.current?.focus();
+                      }
+                    }
+                  }}
+                  onChange={(activeKey) => {
+                    workspace.edit(activeKey);
+                  }}
+                  renderTabBar={(tabBarProps, DefaultTabBar) => (
+                    <DefaultTabBar {...tabBarProps}>
+                      {(node) => (
+                        <DraggableTabNode id={node.key as string} key={node.key}>
+                          {node}
+                        </DraggableTabNode>
+                      )}
+                    </DefaultTabBar>
+                  )}
+                  items={workspace.editors.map((v) => {
+                    return {
+                      label: (
+                        <Tooltip
+                          arrow={false}
+                          placement="bottom"
+                          mouseEnterDelay={1}
+                          // mouseLeaveDelay={100}
+                          color="#010409"
+                          overlayStyle={{ userSelect: "none", WebkitUserSelect: "none" }}
+                          autoAdjustOverflow={true}
+                          overlayInnerStyle={{
+                            width: "fit-content",
+                            border: "1px solid var(--b3-color-border)",
+                            borderRadius: "4px",
+                          }}
+                          title={<div style={{ width: "max-content" }}>{v.path}</div>}
+                        >
+                          {`${Path.basename(v.path)}${v.changed ? "*" : ""}`}
+                        </Tooltip>
+                      ),
+                      key: v.path,
+                      children: <Editor data={v} onChange={forceUpdate} />,
+                    };
+                  })}
+                />
+              </SortableContext>
+            </DndContext>
           )}
         </Content>
         <Inspector />

@@ -60,6 +60,32 @@ body {
   background-color: #010409;
 }
 
+.ant-tabs-nav-wrap {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+.ant-tabs-nav-wrap::-webkit-scrollbar {
+  height: 8px;
+}
+
+.ant-tabs-nav-wrap::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.ant-tabs-nav-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ant-tabs-nav-list {
+  transform: none !important;
+}
+
+.ant-tabs-nav-operations {
+  display: none !important;
+}
+
 .ant-tabs,
 .ant-tabs-content-holder,
 .ant-tabs-content,
