@@ -3,7 +3,7 @@ import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dn
 import { CSS } from "@dnd-kit/utilities";
 import { app } from "@electron/remote";
 import { Button, Flex, Layout, Space, Tabs, Tag, Tooltip } from "antd";
-import React, { FC, useEffect, useRef, useState } from "react";
+import React, { FC, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FaExclamationTriangle } from "react-icons/fa";
 import { PiTreeStructureFill } from "react-icons/pi";
@@ -40,35 +40,48 @@ const DraggableTabNode: FC<{ id: string; children: React.ReactElement }> = ({ id
   });
 };
 
-const EDGE_SCROLL_ZONE = 50;
-const EDGE_SCROLL_SPEED = 8;
-
-function getTabNavWrap(tabsRef: React.RefObject<HTMLDivElement | null>): HTMLElement | null {
-  return tabsRef.current?.querySelector(".ant-tabs-nav-wrap") ?? null;
+function createRestrictToTabBar(
+  tabsRef: React.RefObject<HTMLDivElement | null>
+): Modifier {
+  return ({ transform, draggingNodeRect }) => {
+    if (!draggingNodeRect) return transform;
+    const navWrap = tabsRef.current?.querySelector<HTMLElement>(".ant-tabs-nav-wrap");
+    if (!navWrap) return { ...transform, y: 0 };
+    const rect = navWrap.getBoundingClientRect();
+    const minX = rect.left - draggingNodeRect.left;
+    const maxX = rect.right - draggingNodeRect.left - draggingNodeRect.width;
+    return {
+      ...transform,
+      x: Math.min(Math.max(transform.x, minX), maxX),
+      y: 0,
+    };
+  };
 }
 
-const restrictToTabBar: Modifier = ({ transform, containerNodeRect, draggingNodeRect }) => {
-  if (!containerNodeRect || !draggingNodeRect) return transform;
-  const minX = containerNodeRect.left - draggingNodeRect.left;
-  const maxX = containerNodeRect.left + containerNodeRect.width - draggingNodeRect.left - draggingNodeRect.width;
-  return {
-    ...transform,
-    x: Math.min(Math.max(transform.x, minX), maxX),
-    y: 0,
-  };
-};
-
-function useTabWheelScroll(tabsRef: React.RefObject<HTMLDivElement | null>) {
+function useTabBarScrollFix(tabsRef: React.RefObject<HTMLDivElement | null>) {
   useEffect(() => {
-    const navWrap = getTabNavWrap(tabsRef);
+    const navWrap = tabsRef.current?.querySelector<HTMLElement>(".ant-tabs-nav-wrap");
     if (!navWrap) return;
+
+    const onFocusCapture = () => {
+      const saved = navWrap.scrollLeft;
+      requestAnimationFrame(() => {
+        navWrap.scrollLeft = saved;
+      });
+    };
+
     const onWheel = (e: WheelEvent) => {
       if (navWrap.scrollWidth <= navWrap.clientWidth) return;
       e.preventDefault();
-      navWrap.scrollLeft += e.deltaY;
+      navWrap.scrollLeft += e.deltaY || e.deltaX;
     };
+
+    navWrap.addEventListener("focus", onFocusCapture, true);
     navWrap.addEventListener("wheel", onWheel, { passive: false });
-    return () => navWrap.removeEventListener("wheel", onWheel);
+    return () => {
+      navWrap.removeEventListener("focus", onFocusCapture, true);
+      navWrap.removeEventListener("wheel", onWheel);
+    };
   });
 }
 
@@ -113,48 +126,10 @@ export const Workspace: FC = () => {
 
   const keysRef = useRef<HTMLDivElement>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
-  const scrollIntervalRef = useRef<number | null>(null);
   const tabDndSensor = useSensor(PointerSensor, { activationConstraint: { distance: 5 } });
+  const tabBarModifiers = useMemo(() => [createRestrictToTabBar(tabsRef)], []);
 
-  useTabWheelScroll(tabsRef);
-
-  const edgeScrollDirRef = useRef(0);
-
-  const stopEdgeScroll = () => {
-    if (scrollIntervalRef.current !== null) {
-      clearInterval(scrollIntervalRef.current);
-      scrollIntervalRef.current = null;
-    }
-    edgeScrollDirRef.current = 0;
-  };
-
-  const handleDragMove = (event: { activatorEvent: Event; delta: { x: number } }) => {
-    const navWrap = getTabNavWrap(tabsRef);
-    if (!navWrap) return;
-    const rect = navWrap.getBoundingClientRect();
-    const pointerX = (event.activatorEvent as PointerEvent).clientX + event.delta.x;
-    let direction = 0;
-    if (pointerX < rect.left + EDGE_SCROLL_ZONE) direction = -1;
-    else if (pointerX > rect.right - EDGE_SCROLL_ZONE) direction = 1;
-
-    if (direction !== edgeScrollDirRef.current) {
-      stopEdgeScroll();
-      edgeScrollDirRef.current = direction;
-      if (direction !== 0) {
-        scrollIntervalRef.current = window.setInterval(() => {
-          const maxScroll = navWrap.scrollWidth - navWrap.clientWidth;
-          if (
-            (direction === -1 && navWrap.scrollLeft <= 0) ||
-            (direction === 1 && navWrap.scrollLeft >= maxScroll)
-          ) {
-            stopEdgeScroll();
-            return;
-          }
-          navWrap.scrollLeft += direction * EDGE_SCROLL_SPEED;
-        }, 16);
-      }
-    }
-  };
+  useTabBarScrollFix(tabsRef);
 
   useKeyPress(Hotkey.Build, keysRef, (event) => {
     event.preventDefault();
@@ -587,22 +562,28 @@ export const Workspace: FC = () => {
             </Flex>
           )}
           {workspace.editors.length > 0 && (
+            <div ref={tabsRef} style={{ display: "contents" }}>
             <DndContext
               sensors={[tabDndSensor]}
               collisionDetection={closestCenter}
-              modifiers={[restrictToTabBar]}
-              onDragMove={handleDragMove}
+              modifiers={tabBarModifiers}
               onDragEnd={({ active, over }) => {
-                stopEdgeScroll();
                 if (active.id !== over?.id) {
+                  const navWrap =
+                    tabsRef.current?.querySelector<HTMLElement>(".ant-tabs-nav-wrap");
+                  const savedScroll = navWrap?.scrollLeft ?? 0;
                   const from = workspace.editors.findIndex((v) => v.path === active.id);
                   const to = workspace.editors.findIndex((v) => v.path === over?.id);
                   if (from >= 0 && to >= 0) {
                     workspace.reorderEditors(from, to);
                   }
+                  if (navWrap) {
+                    requestAnimationFrame(() => {
+                      navWrap.scrollLeft = savedScroll;
+                    });
+                  }
                 }
               }}
-              onDragCancel={stopEdgeScroll}
             >
               <SortableContext
                 items={workspace.editors.map((v) => v.path)}
@@ -664,6 +645,7 @@ export const Workspace: FC = () => {
                 />
               </SortableContext>
             </DndContext>
+            </div>
           )}
         </Content>
         <Inspector />

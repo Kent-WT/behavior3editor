@@ -537,12 +537,13 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     const workspace = get();
     const setting = useSetting.getState();
     const idx = workspace.editors.findIndex((v) => v.path === path);
+    const editor = workspace.editors[idx];
     const editors = workspace.editors.filter((v) => v.path !== path);
-    const editor = workspace.editors.find((v) => v.path === path);
     let editting = workspace.editing;
     editor?.dispatch?.("close");
     if (editors.length && path === editting?.path) {
-      editting = editors[idx === editors.length ? idx - 1 : idx];
+      const nextIdx = idx >= editors.length ? editors.length - 1 : idx;
+      editting = editors[nextIdx];
       workspace.onEditingTree(editting);
     }
     if (editors.length === 0) {
