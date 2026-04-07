@@ -20,7 +20,6 @@ import {
   VERSION,
 } from "./b3type";
 import Path from "./path";
-import { stringifyJson } from "./stringify";
 import { nanoid, readJson, readTree, readWorkspace } from "./util";
 
 export class NodeDefs extends Map<string, NodeDef> {
@@ -783,14 +782,28 @@ export const createBuildData = (path: string) => {
     }
   };
 
+  const cleanNullArgs = (node: NodeData) => {
+    if (node.args) {
+      for (const key of Object.keys(node.args)) {
+        if (node.args[key] === null) {
+          delete node.args[key];
+        }
+      }
+    }
+  };
+
   try {
     const treeModel: TreeData = readTree(path);
     refreshNodeData(treeModel, treeModel.root, 1);
     dfs(treeModel.root, (node) => (node.id = treeModel.prefix + node.id));
     treeModel.name = Path.basenameWithoutExt(path);
     treeModel.root = createFileData(treeModel.root, true);
-    dfs(treeModel.root, (node) => clearUnnecessaryKey(node));
+    dfs(treeModel.root, (node) => {
+      clearUnnecessaryKey(node);
+      cleanNullArgs(node);
+    });
     clearUnnecessaryKey(treeModel);
+    delete (treeModel as unknown as Record<string, unknown>)["custom"];
     return treeModel;
   } catch (e) {
     console.log("build error:", path, e);
@@ -891,7 +904,7 @@ export const buildProject = async (project: string, buildDir: string) => {
       }
       buildScript?.onWriteFile?.(buildpath, tree);
       fs.mkdirSync(Path.dirname(buildpath), { recursive: true });
-      fs.writeFileSync(buildpath, stringifyJson(tree, { indent: 2 }));
+      fs.writeFileSync(buildpath, JSON.stringify(tree, null, 2));
     }
   }
   allErrors.forEach((v) => console.error(v));
